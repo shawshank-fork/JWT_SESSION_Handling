@@ -20,7 +20,7 @@ const users = [
     }
 ]
 
-const sessions = new Map();
+const sessions = new Map(); //used to track acive login session, after succesfull login it may contain  session id(key) and {userid, expiresAt} as value
 const SESSION_DURATION_MS = 15 * 60 * 1000;
 
 app.post("/login", async (req, res) => {
@@ -51,15 +51,17 @@ app.post("/login", async (req, res) => {
         });
     }
 
-    const sessionId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID(); //session id is a identifier for a particular login session, application uses it to fidn the session record in the sessions map
     const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
 
-    sessions.set(sessionId, {
+    sessions.set(sessionId, { //sessions is a map whiich stores key value pairs, key being - session id and vlaue being userdid and email
         userId: user.id,
         expiresAt
     });
 
-    const token = jwt.sign(
+    //why save this session id or why to keep it at all? - 
+
+    const token = jwt.sign(  //creates a signed json web token, never put passwords or other secrets in JWT payload
         {
             sub: user.id,
             email: user.email,
@@ -90,7 +92,72 @@ app.post("/login", async (req, res) => {
     });
 });
 
-//we always store psswordHash and never the actual pass. During login bcrypt will comapr the password supplied by the user with this hash:
+function authenticate(req, res, next) {
+    const {token, sessionId} = req.cookies;
+
+    if(!token || !sessionId) {
+        return res.status(401).json({
+            error: "Authenticaion cookies are missing"
+        });
+    }
+
+    try {
+        const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
+
+        if(decodedToken.sid !== sessionId) {
+            return res.status(401).json({
+                error: "JWT and session ID do not match"
+            });
+        }
+
+        const session = sessions.get(sessionId);
+
+        if(!session) {
+            return res.status(401).json({
+                error: "Session does not exist or was revoked"
+            });
+        }
+
+        if(session.expiresAt.getTime() < Date.now()) {
+            sessions.delete(sessionId);
+
+            return res.status(401).json({
+                error: "Sessions has expired"
+            });
+        }
+
+        if(session.userId !== decodedToken.sub) {
+            return res.status(401).json({
+                error: "Session does not belong to this user"
+            });
+        }
+
+        req.auth = {
+            userId: decodedToken.sub,
+            email: decodedToken.email,
+            sessionId
+        };
+
+        next();
+
+    } catch (error) {
+        return res.status(401).json({
+            error: "Invalid or expired JWT"
+        });
+    }
+}
+
+app.get("/me", authenticate, (req, res) => {
+    res.json({
+        message: "You reached a protected route",
+        user: {
+            id: req.auth.userId,
+            email: req.auth.email
+        }
+    });
+});
+
+//we always store passwordHash and never the actual pass. During login bcrypt will comapr the password supplied by the user with this hash:
 
 app.get("/", (req, res) => {
   res.json({
